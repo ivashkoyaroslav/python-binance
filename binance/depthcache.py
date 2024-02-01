@@ -35,7 +35,7 @@ class DepthCache(object):
 
         """
         self._bids[bid[0]] = self.conv_type(bid[1])
-        if bid[1] == "0.00000000":
+        if bid[1] in "0.000000000000":
             del self._bids[bid[0]]
 
     def add_ask(self, ask):
@@ -46,7 +46,7 @@ class DepthCache(object):
 
         """
         self._asks[ask[0]] = self.conv_type(ask[1])
-        if ask[1] == "0.00000000":
+        if ask[1] in "0.000000000000":
             del self._asks[ask[0]]
 
     def get_bids(self):
@@ -392,6 +392,7 @@ class FuturesDepthCacheManager(BaseDepthCacheManager):
     def __init__(self, client, symbol, loop=None, refresh_interval=None, bm=None, limit=10, conv_type=float, ws_interval: Optional[int] = None):
         super().__init__(client, symbol, loop, refresh_interval, bm, limit, conv_type)
         self._ws_interval = ws_interval
+        self._last_rest_id = None
 
     async def _init_cache(self):
         """Initialise the depth cache calling REST endpoint
@@ -399,8 +400,10 @@ class FuturesDepthCacheManager(BaseDepthCacheManager):
         :return:
         """
         self._last_update_id = None
+        self._last_rest_id = None
         self._depth_message_buffer = []
 
+        time_ = time.time_ns() // 1_000_000 
         res = await self._client.futures_order_book(symbol=self._symbol, limit=self._limit)
 
         # initialise or clear depth cache
@@ -416,11 +419,12 @@ class FuturesDepthCacheManager(BaseDepthCacheManager):
             self._depth_cache.add_ask(ask)
 
         # set first update id
-        self._last_update_id = res['lastUpdateId']
+        self._last_rest_id = res['lastUpdateId']
 
         # Apply any updates from the websocket
         for msg in self._depth_message_buffer:
             await self._process_depth_message(msg)
+        # print(f'_process_depth_message {time.time_ns() // 1_000_000 - time_}')
 
         # clear the depth buffer
         self._depth_message_buffer = []
@@ -435,12 +439,12 @@ class FuturesDepthCacheManager(BaseDepthCacheManager):
 
         msg = msg.get('data')
 
-        if self._last_update_id is None:
+        if self._last_rest_id is None:
             # Initial depth snapshot fetch not yet performed, buffer messages
             self._depth_message_buffer.append(msg)
             return
 
-        if msg['u'] <= self._last_update_id:
+        if msg['u'] <= self._last_rest_id:
             # ignore any updates before the initial update id
             return
         elif msg['pu'] != self._last_update_id:
@@ -459,6 +463,8 @@ class FuturesDepthCacheManager(BaseDepthCacheManager):
         # after processing event see if we need to refresh the depth cache
         if self._refresh_interval and int(time.time()) > self._refresh_time:
             await self._init_cache()
+            self._last_update_id = msg['u']
+            # return
 
         return res
 
