@@ -20,7 +20,7 @@ with open("README.rst", "r") as fh:
     long_description = fh.read()
 
 setup(
-    name='python-binance',
+    name='python-binance-cooler',
     version=version,
     packages=['binance'],
     description='Binance REST API python implementation',

@@ -816,18 +816,35 @@ class BinanceSocketManager:
         stream_name = '@indexPrice@1s' if fast else '@indexPrice'
         return self._get_futures_socket(symbol.lower() + stream_name, futures_type=FuturesType.COIN_M)
 
-    def futures_depth_socket(self, symbol: str, depth: str = '10', futures_type=FuturesType.USD_M):
-        """Subscribe to a futures depth data stream
+    def futures_depth_socket(self, symbol: str, depth: str = '10', futures_type=FuturesType.USD_M, interval: Optional[int] = None):
+        """Subscribe to a futures depth data stream. Depending on parameters, will listen to either partial or diff book
 
         https://binance-docs.github.io/apidocs/futures/en/#partial-book-depth-streams
+        https://binance-docs.github.io/apidocs/futures/en/#diff-book-depth-streams
 
         :param symbol: required
         :type symbol: str
         :param depth: optional Number of depth entries to return, default 10.
         :type depth: str
         :param futures_type: use USD-M or COIN-M futures default USD-M
+        :type futures_type: FuturesType
+        :param interval: optional interval for updates, default None. If not set, updates happen every 100ms. Must be 100ms, 250ms or 500ms
+        :type interval: int
         """
-        return self._get_futures_socket(symbol.lower() + '@depth' + str(depth), futures_type=futures_type)
+
+        default_interval = 100
+
+        interval = interval or default_interval
+
+        allowed_intervals = [100, 250, 500]
+        if interval not in allowed_intervals:
+            raise ValueError(f"Websocket interval value {interval} not allowed. Allowed values are {allowed_intervals}")
+
+        interval_str: str = f'@{interval}ms'
+
+        stream_name = symbol.lower() + '@depth' + str(depth) + interval_str
+
+        return self._get_futures_socket(stream_name, futures_type=futures_type)
 
     def symbol_mark_price_socket(self, symbol: str, fast: bool = True, futures_type: FuturesType = FuturesType.USD_M):
         """Start a websocket for a symbol's futures mark price

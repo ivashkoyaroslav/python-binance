@@ -389,6 +389,42 @@ class DepthCacheManager(BaseDepthCacheManager):
 
 
 class FuturesDepthCacheManager(BaseDepthCacheManager):
+    def __init__(self, client, symbol, loop=None, refresh_interval=None, bm=None, limit=10, conv_type=float, ws_interval: Optional[int] = None):
+        super().__init__(client, symbol, loop, refresh_interval, bm, limit, conv_type)
+        self._ws_interval = ws_interval
+
+    async def _init_cache(self):
+        """Initialise the depth cache calling REST endpoint
+
+        :return:
+        """
+        self._last_update_id = None
+        self._depth_message_buffer = []
+
+        res = await self._client.futures_order_book(symbol=self._symbol, limit=self._limit)
+
+        # initialise or clear depth cache
+        await super()._init_cache()
+
+        # process bid and asks from the order book
+        super()._apply_orders(res)
+        assert self._depth_cache
+
+        for bid in res['bids']:
+            self._depth_cache.add_bid(bid)
+        for ask in res['asks']:
+            self._depth_cache.add_ask(ask)
+
+        # set first update id
+        self._last_update_id = res['lastUpdateId']
+
+        # Apply any updates from the websocket
+        for msg in self._depth_message_buffer:
+            await self._process_depth_message(msg)
+
+        # clear the depth buffer
+        self._depth_message_buffer = []
+
     async def _process_depth_message(self, msg):
         """Process a depth event message.
 
@@ -396,19 +432,50 @@ class FuturesDepthCacheManager(BaseDepthCacheManager):
         :return:
 
         """
+
         msg = msg.get('data')
-        return await super()._process_depth_message(msg)
 
-    def _apply_orders(self, msg):
-        assert self._depth_cache
-        self._depth_cache._bids = msg.get('b', [])
-        self._depth_cache._asks = msg.get('a', [])
+        if self._last_update_id is None:
+            # Initial depth snapshot fetch not yet performed, buffer messages
+            self._depth_message_buffer.append(msg)
+            return
 
-        # keeping update time
-        self._depth_cache.update_time = msg.get('E') or msg.get('lastUpdateId')
+        if msg['u'] <= self._last_update_id:
+            # ignore any updates before the initial update id
+            return
+        elif msg['pu'] != self._last_update_id:
+            # if not buffered check we get sequential updates
+            # otherwise init cache again
+            await self._init_cache()
+
+        # add any bid or ask values
+        self._apply_orders(msg)
+
+        # call the callback with the updated depth cache
+        res = self._depth_cache
+
+        self._last_update_id = msg['u']
+
+        # after processing event see if we need to refresh the depth cache
+        if self._refresh_interval and int(time.time()) > self._refresh_time:
+            await self._init_cache()
+
+        return res
+
+    async def _start_socket(self):
+        """Start the depth cache socket
+
+        :return:
+        """
+        if not getattr(self, '_depth_message_buffer', None):
+            self._depth_message_buffer = []
+
+        await super()._start_socket()
 
     def _get_socket(self):
-        sock = self._bm.futures_depth_socket(self._symbol)
+        # depth = '' returns full diff
+        # https://binance-docs.github.io/apidocs/futures/en/#diff-book-depth-streams
+        sock = self._bm.futures_depth_socket(self._symbol, depth='', interval=self._ws_interval)
         return sock
 
 
@@ -465,7 +532,7 @@ class ThreadedDepthCacheManager(ThreadedApiManager):
         )
 
     def start_futures_depth_socket(
-            self, callback: Callable, symbol: str, refresh_interval=None, bm=None, limit=10, conv_type=float
+            self, callback: Callable, symbol: str, refresh_interval=None, bm=None, limit=10, conv_type=float, ws_interval: Optional[int]=None
     ) -> str:
         return self._start_depth_cache(
             dcm_class=FuturesDepthCacheManager,
@@ -474,7 +541,8 @@ class ThreadedDepthCacheManager(ThreadedApiManager):
             refresh_interval=refresh_interval,
             bm=bm,
             limit=limit,
-            conv_type=conv_type
+            conv_type=conv_type,
+            ws_interval=ws_interval
         )
 
     def start_options_depth_socket(
